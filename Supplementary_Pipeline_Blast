@@ -1,0 +1,68 @@
+# 1. Install required packages
+!pip install biopython
+!apt-get install -y clustalo
+
+# 2. Import libraries
+from Bio import Entrez, SeqIO, SearchIO
+from Bio.Blast import NCBIWWW
+from Bio.Align.Applications import ClustalOmegaCommandline
+from Bio.Seq import Seq
+from Bio import AlignIO
+from Bio import SeqRecord
+import os
+from google.colab import files
+
+# 3. Set up NCBI Entrez
+Entrez.email = "example@example.com"  # Replace with your email
+query_accession = "AB780998.1"           # Accession number for query sequence
+
+# 4. Download query sequence (FASTA)
+handle = Entrez.efetch(db="nucleotide", id=query_accession, rettype="fasta", retmode="text")
+query_seq = handle.read()
+handle.close()
+
+with open("query.fasta", "w") as f:
+    f.write(query_seq)
+
+# 5. Perform NCBI BLAST (blastn against nt database)
+result_handle = NCBIWWW.qblast("blastn", "nt", query_seq, hitlist_size=250, format_type="XML")
+
+with open("blast_result.xml", "w") as out_handle:
+    out_handle.write(result_handle.read())
+result_handle.close()
+
+# 6. Parse BLAST results and filter hits with identity ≥ 99.5%
+blast_qresult = SearchIO.read("blast_result.xml", "blast-xml")
+filtered_hits = [hit for hit in blast_qresult if hit.hsps[0].ident_num / hit.hsps[0].aln_span >= 0.995]
+accessions = [hit.id.split('|')[3] for hit in filtered_hits if "|" in hit.id]
+
+# 7. Download GenBank records and extract COX1 CDS only
+records = []
+for acc in accessions:
+    try:
+        handle = Entrez.efetch(db="nucleotide", id=acc, rettype="gb", retmode="text")
+        record = SeqIO.read(handle, "genbank")
+        handle.close()
+
+        for feature in record.features:
+            if feature.type == "CDS":
+                gene = feature.qualifiers.get("gene", [""])[0].lower()
+                product = feature.qualifiers.get("product", [""])[0].lower()
+                if "cox1" in gene or "cox1" in product or "cytochrome oxidase subunit 1" in product:
+                    cox1_seq = feature.location.extract(record.seq)
+                    if len(cox1_seq) >= 1000:
+                        seq_record = SeqRecord.SeqRecord(cox1_seq, id=acc, description="cox1")
+                        records.append(seq_record)
+                    break
+    except:
+        continue
+
+# 8. Save filtered COX1 sequences to FASTA
+SeqIO.write(records, "cox1_filtered.fasta", "fasta")
+
+# 9. Perform multiple sequence alignment using Clustal Omega
+clustalomega_cline = ClustalOmegaCommandline(infile="cox1_filtered.fasta", outfile="aligned.fasta", verbose=True, auto=True)
+os.system(str(clustalomega_cline))
+
+# 10. Download aligned FASTA file
+files.download("aligned.fasta")
